@@ -1,22 +1,39 @@
 import csv, datetime, os, sys
-import psycopg2
+import psycopg2, yaml
 from collections import namedtuple
 
 Row = namedtuple('Row', ['uuid', 'date', 'amount', 'description', 'type', 'tags'])
 allowed_tags = set([tag for line in open("tags.txt") for tag in line.rstrip().split(",")]) | {"", " "}
+def load_settings(filename):
+    with open(filename, "r") as file:
+        os.environ.update(yaml.load(file))
+
 def process(row):
-    # A row looks like [<UUID>, <Date>, <CheckNum>, <Description>, <Withdrawal Amount>, <Deposit Amount>, <Additional Info>, <Tags>] 
+    # A row may look like 
+    #    [<UUID>, <Date>, <CheckNum>, <Description>, <Withdrawal Amount>, <Deposit Amount>, <Additional Info>, <Tags>] (debit card)
+    # or
+    #    [<UUID>, Date, Transaction, Name, Memo, Amount, <Tags>] (credit card)
+    #
     # We turn this into a Row namedtuple with things switched around.
     uuid = row[0]
+    tags = row[-1]
+
     try:
         date = datetime.datetime.strptime(row[1], "%m/%d/%Y")
     except Exception:
         date = datetime.datetime.strptime(row[1], "%m/%d/%y")
-    
-    amount = float(row[4] or 0) + float(row[5] or 0)
-    description = row[6] # What the spreadsheet calls 'additional info'.
-    type = row[3]
-    tags = row[7]
+
+    is_debit_card = len(row) == 8
+    if is_debit_card: 
+      amount = float(row[4] or 0) + float(row[5] or 0)
+      description = row[6] # What the spreadsheet calls 'additional info'.
+      type = row[3]
+    else:
+      # Credit card.
+      amount = float(row[5] or 0)
+      type = row[3]
+      description = row[4]
+
     return Row(uuid, date, amount, description, type, tags)
 
 def contains_data(line):
@@ -36,6 +53,7 @@ def insert(row):
     return cursor.execute(SQL, row)
 
 if __name__ == "__main__":
+    load_settings("settings.yml")
     count = 0
     with psycopg2.connect(os.environ["DATABASE_URL"]) as conn:
         with conn.cursor() as cursor:
@@ -53,3 +71,4 @@ if __name__ == "__main__":
                         raise
 
 print "%s rows uploaded" % count
+os.system("psql -d %s" % os.environ["DATABASE_URL"])
